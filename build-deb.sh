@@ -44,12 +44,15 @@ Description: SignalSurge Kubernetes single-node installer
  Commands:
   install-k8s   - Install K8s cluster + registry + CI setup
   reset-k8s     - Tear down everything for a clean re-install
+  setup-server  - Initial server setup and provisioning
 EOF
 
 cp "${SCRIPT_DIR}/scripts/install-k8s.sh" "${BUILD_DIR}/usr/local/bin/install-k8s"
 cp "${SCRIPT_DIR}/scripts/reset-k8s.sh" "${BUILD_DIR}/usr/local/bin/reset-k8s"
+cp "${SCRIPT_DIR}/scripts/setup-server.sh" "${BUILD_DIR}/usr/local/bin/setup-server"
 chmod 755 "${BUILD_DIR}/usr/local/bin/install-k8s"
 chmod 755 "${BUILD_DIR}/usr/local/bin/reset-k8s"
+chmod 755 "${BUILD_DIR}/usr/local/bin/setup-server"
 
 dpkg-deb --build "${BUILD_DIR}" "${DIST_DIR}/${BUILD_DIR}.deb"
 rm -rf "${BUILD_DIR}"

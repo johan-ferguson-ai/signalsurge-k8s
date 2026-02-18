@@ -13,6 +13,9 @@ sudo apt install signalsurge-k8s
 ## Usage
 
 ```bash
+# Initial server setup and provisioning
+sudo setup-server
+
 # Install K8s cluster + registry + CI setup
 sudo install-k8s --registry-port 30500
 
