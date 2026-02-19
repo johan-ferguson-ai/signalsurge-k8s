@@ -17,10 +17,12 @@
 #   7.  Wait for node Ready
 #   8.  Install local-path-provisioner StorageClass
 #   9.  Install KEDA (pod monitoring + horizontal autoscaling)
-#   10. Deploy registry:2 with PVC persistence
-#   11. Configure containerd for insecure registry access
-#   12. Create CI ServiceAccount + token
-#   13. Output token, kubeconfig, ready for setup-local-config.sh
+#   10. Install metrics-server (kubectl top, HPA)
+#   11. Install kube-state-metrics (pod/deployment state metrics)
+#   12. Deploy registry:2 with PVC persistence
+#   13. Configure containerd for insecure registry access
+#   14. Create CI ServiceAccount + token
+#   15. Output token, kubeconfig, ready for setup-local-config.sh
 #
 # Idempotent — safe to re-run. Each step checks before acting.
 # =============================================================================
@@ -85,7 +87,7 @@ log_err() {
     echo -e "${RED}  ✗ $1${NC}"
 }
 
-TOTAL_STEPS=13
+TOTAL_STEPS=15
 
 echo ""
 echo "============================================"
@@ -499,9 +501,63 @@ else
 fi
 
 # =============================================================================
-# Step 10: Deploy container registry with PVC persistence
+# Step 10: Install metrics-server
 # =============================================================================
-log_step 10 $TOTAL_STEPS "Deploying container registry"
+log_step 10 $TOTAL_STEPS "Installing metrics-server"
+
+if kubectl get deployment metrics-server -n kube-system &>/dev/null; then
+    log_skip "metrics-server already installed"
+else
+    METRICS_VERSION=$(curl -fsSL "https://api.github.com/repos/kubernetes-sigs/metrics-server/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | cut -d'"' -f4)
+    if [ -z "$METRICS_VERSION" ]; then
+        log_warn "Could not detect latest metrics-server version. Using v0.7.2."
+        METRICS_VERSION="v0.7.2"
+    fi
+    log_ok "Detected metrics-server version: ${METRICS_VERSION}"
+
+    kubectl apply -f "https://github.com/kubernetes-sigs/metrics-server/releases/download/${METRICS_VERSION}/components.yaml" 2>&1 | tail -3
+
+    # Single-node clusters use self-signed kubelet certs — patch in --kubelet-insecure-tls
+    kubectl patch deployment metrics-server -n kube-system \
+        --type='json' \
+        -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+    log_ok "Patched metrics-server with --kubelet-insecure-tls"
+
+    echo "  Waiting for metrics-server..."
+    kubectl wait --for=condition=Available deployment/metrics-server -n kube-system --timeout=120s 2>/dev/null || {
+        log_warn "metrics-server not ready yet — it may need more time"
+    }
+    log_ok "metrics-server ${METRICS_VERSION} installed"
+fi
+
+# =============================================================================
+# Step 11: Install kube-state-metrics
+# =============================================================================
+log_step 11 $TOTAL_STEPS "Installing kube-state-metrics"
+
+if kubectl get deployment kube-state-metrics -n kube-system &>/dev/null; then
+    log_skip "kube-state-metrics already installed"
+else
+    KSM_VERSION=$(curl -fsSL "https://api.github.com/repos/kubernetes/kube-state-metrics/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | cut -d'"' -f4)
+    if [ -z "$KSM_VERSION" ]; then
+        log_warn "Could not detect latest kube-state-metrics version. Using v2.14.0."
+        KSM_VERSION="v2.14.0"
+    fi
+    log_ok "Detected kube-state-metrics version: ${KSM_VERSION}"
+
+    kubectl apply -f "https://github.com/kubernetes/kube-state-metrics/releases/download/${KSM_VERSION}/kube-state-metrics.yaml" 2>&1 | tail -3
+
+    echo "  Waiting for kube-state-metrics..."
+    kubectl wait --for=condition=Available deployment/kube-state-metrics -n kube-system --timeout=120s 2>/dev/null || {
+        log_warn "kube-state-metrics not ready yet — it may need more time"
+    }
+    log_ok "kube-state-metrics ${KSM_VERSION} installed"
+fi
+
+# =============================================================================
+# Step 12: Deploy container registry with PVC persistence
+# =============================================================================
+log_step 12 $TOTAL_STEPS "Deploying container registry"
 
 # Create namespace
 if ! kubectl get namespace ${REGISTRY_NAMESPACE} &>/dev/null; then
@@ -584,9 +640,9 @@ kubectl wait --for=condition=Ready pod -l app=registry -n ${REGISTRY_NAMESPACE} 
 }
 
 # =============================================================================
-# Step 11: Configure containerd for insecure registry access
+# Step 13: Configure containerd for insecure registry access
 # =============================================================================
-log_step 11 $TOTAL_STEPS "Configuring containerd for local registry"
+log_step 13 $TOTAL_STEPS "Configuring containerd for local registry"
 
 # NODE_IP was detected in step 5
 REGISTRY_ADDR="${NODE_IP}:${REGISTRY_PORT}"
@@ -645,9 +701,9 @@ else
 fi
 
 # =============================================================================
-# Step 12: Create CI ServiceAccount + token
+# Step 14: Create CI ServiceAccount + token
 # =============================================================================
-log_step 12 $TOTAL_STEPS "Creating CI ServiceAccount"
+log_step 14 $TOTAL_STEPS "Creating CI ServiceAccount"
 
 # ServiceAccount
 if kubectl get serviceaccount ${SA_NAME} -n ${SA_NAMESPACE} &>/dev/null; then
@@ -694,9 +750,9 @@ fi
 log_ok "Token extracted successfully"
 
 # =============================================================================
-# Step 13: Output summary
+# Step 15: Output summary
 # =============================================================================
-log_step 13 $TOTAL_STEPS "Complete — output summary"
+log_step 15 $TOTAL_STEPS "Complete — output summary"
 
 # Get API server address (use external IP)
 API_SERVER="https://${NODE_IP}:6443"
@@ -735,6 +791,8 @@ echo "  Registry:      ${REGISTRY_ADDR} (NodePort ${REGISTRY_PORT})"
 echo "  StorageClass:  $(kubectl get storageclass -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo 'pending')"
 echo "  CNI:           Flannel"
 echo "  KEDA:          $(kubectl get deployment keda-operator -n keda -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo 'pending')"
+echo "  metrics-server:$(kubectl get deployment metrics-server -n kube-system -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo 'pending')"
+echo "  kube-state:    $(kubectl get deployment kube-state-metrics -n kube-system -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo 'pending')"
 echo ""
 echo "============================================"
 echo " QUICK VERIFICATION"
