@@ -545,7 +545,7 @@ else
     fi
     log_ok "Detected kube-state-metrics version: ${KSM_VERSION}"
 
-    kubectl apply -f "https://github.com/kubernetes/kube-state-metrics/releases/download/${KSM_VERSION}/kube-state-metrics.yaml" 2>&1 | tail -3
+    kubectl apply -k "https://github.com/kubernetes/kube-state-metrics//examples/standard?ref=${KSM_VERSION}" 2>&1 | tail -3
 
     echo "  Waiting for kube-state-metrics..."
     kubectl wait --for=condition=Available deployment/kube-state-metrics -n kube-system --timeout=120s 2>/dev/null || {
