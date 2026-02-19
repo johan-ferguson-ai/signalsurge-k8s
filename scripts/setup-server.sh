@@ -6,7 +6,7 @@ set -euo pipefail
 # and outputs a single registration token to paste into the UI.
 
 # 1. Check dependencies
-for cmd in openssl ssh-keygen hostname python3; do
+for cmd in openssl ssh-keygen hostname; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "ERROR: $cmd is required but not installed"; exit 1; }
 done
 
@@ -33,22 +33,12 @@ echo "Public key installed in ~/.ssh/authorized_keys"
 # 5. Generate random encryption key (32 bytes hex = 64 chars)
 ENC_KEY=$(openssl rand -hex 32)
 
-# 6. Build JSON payload using python3 for safe escaping
-PUBLIC_KEY=$(cat "$TEMP_DIR/id_ed25519.pub" | tr -d '\n')
+# 6. Build JSON payload (awk handles newline escaping for the private key)
+PUBLIC_KEY=$(tr -d '\n' < "$TEMP_DIR/id_ed25519.pub")
 GENERATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-PAYLOAD=$(python3 -c "
-import json, sys
-with open('$TEMP_DIR/id_ed25519', 'r') as f:
-    private_key = f.read()
-print(json.dumps({
-    'hostname': '$HOSTNAME',
-    'sshPort': $SSH_PORT,
-    'sshUsername': '$SSH_USER',
-    'publicKey': '$PUBLIC_KEY',
-    'privateKeyPem': private_key,
-    'generatedAtUtc': '$GENERATED_AT'
-}))
-")
+# Escape private key: replace \ with \\, " with \", then join lines with \n
+PRIVATE_KEY_ESCAPED=$(awk '{gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); printf "%s\\n", $0}' "$TEMP_DIR/id_ed25519")
+PAYLOAD="{\"hostname\":\"$HOSTNAME\",\"sshPort\":$SSH_PORT,\"sshUsername\":\"$SSH_USER\",\"publicKey\":\"$PUBLIC_KEY\",\"privateKeyPem\":\"$PRIVATE_KEY_ESCAPED\",\"generatedAtUtc\":\"$GENERATED_AT\"}"
 
 # 7. Encrypt with AES-256-CBC (OpenSSL PBKDF2 format)
 ENCRYPTED=$(echo "$PAYLOAD" | openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -md sha256 -pass "pass:$ENC_KEY" -a -A)
@@ -57,7 +47,7 @@ ENCRYPTED=$(echo "$PAYLOAD" | openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -md 
 ENCRYPTED_CLEAN=$(echo -n "$ENCRYPTED" | sed 's/=*$//')
 
 # 9. Pick random position 10-99 and insert hex key there
-POS=$(shuf -i 10-99 -n 1)
+POS=$(( (RANDOM % 90) + 10 ))
 BEFORE=${ENCRYPTED_CLEAN:0:$POS}
 AFTER=${ENCRYPTED_CLEAN:$POS}
 
