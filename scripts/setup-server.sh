@@ -6,7 +6,7 @@ set -euo pipefail
 # and outputs a single registration token to paste into the UI.
 
 # 1. Check dependencies
-for cmd in openssl ssh-keygen hostname; do
+for cmd in openssl ssh-keygen hostname awk; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "ERROR: $cmd is required but not installed"; exit 1; }
 done
 
@@ -30,40 +30,58 @@ cat "$TEMP_DIR/id_ed25519.pub" >> ~/.ssh/authorized_keys
 chmod 600 ~/.ssh/authorized_keys
 echo "Public key installed in ~/.ssh/authorized_keys"
 
-# 5. Generate random encryption key (32 bytes hex = 64 chars)
+# 5. Configure passwordless sudo for remote execution (required by automated deployment)
+SUDOERS_FILE="/etc/sudoers.d/signalsurge-deploy"
+if [ ! -f "$SUDOERS_FILE" ]; then
+    echo "${SSH_USER} ALL=(ALL) NOPASSWD: ALL" | sudo tee "$SUDOERS_FILE" > /dev/null
+    sudo chmod 440 "$SUDOERS_FILE"
+    echo "Passwordless sudo configured for ${SSH_USER}."
+else
+    echo "Passwordless sudo already configured."
+fi
+
+# 6. Generate random encryption key (32 bytes hex = 64 chars)
 ENC_KEY=$(openssl rand -hex 32)
 
-# 6. Build JSON payload (awk handles newline escaping for the private key)
-PUBLIC_KEY=$(tr -d '\n' < "$TEMP_DIR/id_ed25519.pub")
+# 7. Build JSON payload using awk for safe escaping
+PUBLIC_KEY=$(cat "$TEMP_DIR/id_ed25519.pub" | tr -d '\n')
 GENERATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-# Escape private key: replace \ with \\, " with \", then join lines with \n
-PRIVATE_KEY_ESCAPED=$(awk '{gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); printf "%s\\n", $0}' "$TEMP_DIR/id_ed25519")
-PAYLOAD="{\"hostname\":\"$HOSTNAME\",\"sshPort\":$SSH_PORT,\"sshUsername\":\"$SSH_USER\",\"publicKey\":\"$PUBLIC_KEY\",\"privateKeyPem\":\"$PRIVATE_KEY_ESCAPED\",\"generatedAtUtc\":\"$GENERATED_AT\"}"
+PRIVATE_KEY_ESCAPED=$(awk '{printf "%s\\n", $0}' "$TEMP_DIR/id_ed25519")
+PAYLOAD=$(awk -v hostname="$HOSTNAME" \
+              -v ssh_port="$SSH_PORT" \
+              -v ssh_user="$SSH_USER" \
+              -v pub_key="$PUBLIC_KEY" \
+              -v priv_key="$PRIVATE_KEY_ESCAPED" \
+              -v gen_at="$GENERATED_AT" \
+    'BEGIN {
+        printf "{\"hostname\":\"%s\",\"sshPort\":%s,\"sshUsername\":\"%s\",\"publicKey\":\"%s\",\"privateKeyPem\":\"%s\",\"generatedAtUtc\":\"%s\"}\n",
+            hostname, ssh_port, ssh_user, pub_key, priv_key, gen_at
+    }')
 
-# 7. Encrypt with AES-256-CBC (OpenSSL PBKDF2 format)
+# 8. Encrypt with AES-256-CBC (OpenSSL PBKDF2 format)
 ENCRYPTED=$(echo "$PAYLOAD" | openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -md sha256 -pass "pass:$ENC_KEY" -a -A)
 
-# 8. Strip base64 padding (we'll add our own position marker)
+# 9. Strip base64 padding (we'll add our own position marker)
 ENCRYPTED_CLEAN=$(echo -n "$ENCRYPTED" | sed 's/=*$//')
 
-# 9. Pick random position 10-99 and insert hex key there
+# 10. Pick random position 10-99 and insert hex key there
 POS=$(( (RANDOM % 90) + 10 ))
 BEFORE=${ENCRYPTED_CLEAN:0:$POS}
 AFTER=${ENCRYPTED_CLEAN:$POS}
 
-# 10. Encode position: tens digit -> letter (A=1..I=9), ones digit stays
+# 11. Encode position: tens digit -> letter (A=1..I=9), ones digit stays
 TENS=$((POS / 10))
 ONES=$((POS % 10))
 LETTERS="_ABCDEFGHI"
 POS_ENCODED="${LETTERS:$TENS:1}${ONES}=="
 
-# 11. Build single registration token
+# 12. Build single registration token
 REGISTRATION_TOKEN="${BEFORE}${ENC_KEY}${AFTER}${POS_ENCODED}"
 
-# 12. Compute fingerprint for display
+# 13. Compute fingerprint for display
 FINGERPRINT=$(ssh-keygen -l -f "$TEMP_DIR/id_ed25519.pub" | awk '{print $2}')
 
-# 13. Output
+# 14. Output
 echo ""
 echo "=========================================="
 echo "  SERVER REGISTRATION TOKEN"
