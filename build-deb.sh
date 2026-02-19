@@ -8,7 +8,7 @@
 # =============================================================================
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 PKG_NAME="signalsurge-k8s"
 ARCH="all"
 BUILD_DIR="${PKG_NAME}_${VERSION}_${ARCH}"
