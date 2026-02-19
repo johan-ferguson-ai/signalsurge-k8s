@@ -46,17 +46,19 @@ ENC_KEY=$(openssl rand -hex 32)
 # 7. Build JSON payload using awk for safe escaping
 PUBLIC_KEY=$(cat "$TEMP_DIR/id_ed25519.pub" | tr -d '\n')
 GENERATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-PRIVATE_KEY_ESCAPED=$(awk '{printf "%s\\n", $0}' "$TEMP_DIR/id_ed25519")
+# Escape private key newlines to \n for JSON.
+# Export via env var — awk -v re-interprets \n back to real newlines, ENVIRON does not.
+export _SS_PRIV_KEY=$(awk '{printf "%s\\n", $0}' "$TEMP_DIR/id_ed25519")
 PAYLOAD=$(awk -v hostname="$HOSTNAME" \
               -v ssh_port="$SSH_PORT" \
               -v ssh_user="$SSH_USER" \
               -v pub_key="$PUBLIC_KEY" \
-              -v priv_key="$PRIVATE_KEY_ESCAPED" \
               -v gen_at="$GENERATED_AT" \
     'BEGIN {
         printf "{\"hostname\":\"%s\",\"sshPort\":%s,\"sshUsername\":\"%s\",\"publicKey\":\"%s\",\"privateKeyPem\":\"%s\",\"generatedAtUtc\":\"%s\"}\n",
-            hostname, ssh_port, ssh_user, pub_key, priv_key, gen_at
+            hostname, ssh_port, ssh_user, pub_key, ENVIRON["_SS_PRIV_KEY"], gen_at
     }')
+unset _SS_PRIV_KEY
 
 # 8. Encrypt with AES-256-CBC (OpenSSL PBKDF2 format)
 ENCRYPTED=$(echo "$PAYLOAD" | openssl enc -aes-256-cbc -pbkdf2 -iter 100000 -md sha256 -pass "pass:$ENC_KEY" -a -A)
