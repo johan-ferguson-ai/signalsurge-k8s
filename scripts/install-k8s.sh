@@ -21,8 +21,9 @@
 #   11. Install kube-state-metrics (pod/deployment state metrics)
 #   12. Deploy registry:2 with PVC persistence
 #   13. Configure containerd for insecure registry access
-#   14. Create CI ServiceAccount + token
-#   15. Output token, kubeconfig, ready for setup-local-config.sh
+#   14. Install NGINX Ingress Controller
+#   15. Create CI ServiceAccount + token
+#   16. Output token, kubeconfig, ready for setup-local-config.sh
 #
 # Idempotent — safe to re-run. Each step checks before acting.
 # =============================================================================
@@ -87,7 +88,7 @@ log_err() {
     echo -e "${RED}  ✗ $1${NC}"
 }
 
-TOTAL_STEPS=15
+TOTAL_STEPS=16
 
 echo ""
 echo "============================================"
@@ -701,9 +702,42 @@ else
 fi
 
 # =============================================================================
-# Step 14: Create CI ServiceAccount + token
+# Step 14: Install NGINX Ingress Controller
 # =============================================================================
-log_step 14 $TOTAL_STEPS "Creating CI ServiceAccount"
+log_step 14 $TOTAL_STEPS "Installing NGINX Ingress Controller"
+
+if kubectl get namespace ingress-nginx &>/dev/null; then
+    log_skip "ingress-nginx namespace already exists"
+else
+    kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.12.1/deploy/static/provider/baremetal/deploy.yaml
+    log_ok "Applied NGINX Ingress Controller manifests"
+
+    echo "  Waiting for ingress controller to be ready..."
+    kubectl wait --namespace ingress-nginx \
+        --for=condition=ready pod \
+        --selector=app.kubernetes.io/component=controller \
+        --timeout=120s 2>/dev/null || true
+    log_ok "NGINX Ingress Controller installed"
+fi
+
+# Patch the ingress-nginx-controller service to use hostPort so it listens on port 80/443
+# on the node itself (bare-metal single-node setup — no LoadBalancer available)
+if kubectl get daemonset ingress-nginx-controller -n ingress-nginx &>/dev/null; then
+    log_skip "Ingress controller already patched to DaemonSet"
+else
+    # The baremetal manifest creates a Deployment — patch the service to NodePort
+    # and ensure ports 80/443 are accessible on the node
+    kubectl patch service ingress-nginx-controller -n ingress-nginx \
+        --type='json' \
+        -p='[{"op":"replace","path":"/spec/type","value":"NodePort"},{"op":"replace","path":"/spec/ports/0/nodePort","value":30080},{"op":"replace","path":"/spec/ports/1/nodePort","value":30443}]' \
+        2>/dev/null || log_skip "Service already patched"
+    log_ok "Ingress controller accessible on NodePort 30080 (HTTP) and 30443 (HTTPS)"
+fi
+
+# =============================================================================
+# Step 15: Create CI ServiceAccount + token
+# =============================================================================
+log_step 15 $TOTAL_STEPS "Creating CI ServiceAccount"
 
 # ServiceAccount
 if kubectl get serviceaccount ${SA_NAME} -n ${SA_NAMESPACE} &>/dev/null; then
@@ -750,9 +784,9 @@ fi
 log_ok "Token extracted successfully"
 
 # =============================================================================
-# Step 15: Output summary
+# Step 16: Output summary
 # =============================================================================
-log_step 15 $TOTAL_STEPS "Complete — output summary"
+log_step 16 $TOTAL_STEPS "Complete — output summary"
 
 # Get API server address (use external IP)
 API_SERVER="https://${NODE_IP}:6443"
